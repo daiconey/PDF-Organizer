@@ -1,408 +1,399 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileUp, X, Download, Move, RefreshCw, Trash2, ArrowLeft, ArrowRight } from 'lucide-react';
-
-const PDFOrganizer = () => {
-  const [pdfFile, setPdfFile] = useState(null);
-  const [pages, setPages] = useState([]); // { id, originalIndex, imageUrl }
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [draggedItemIndex, setDraggedItemIndex] = useState(null);
-  const fileInputRef = useRef(null);
-  const [originalPdfBytes, setOriginalPdfBytes] = useState(null);
-  const [isLibrariesLoaded, setIsLibrariesLoaded] = useState(false);
-
-  // Initialize Libraries dynamically to ensure they exist
-  useEffect(() => {
-    const loadLibraries = async () => {
-      const loadScript = (src) => {
-        return new Promise((resolve, reject) => {
-          if (document.querySelector(`script[src="${src}"]`)) {
-            resolve();
-            return;
-          }
-          const script = document.createElement('script');
-          script.src = src;
-          script.onload = resolve;
-          script.onerror = reject;
-          document.head.appendChild(script);
-        });
-      };
-
-      try {
-        // Load pdf.js if not present
-        if (!window.pdfjsLib) {
-          await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
-        }
-        // Load pdf-lib if not present
-        if (!window.PDFLib) {
-          await loadScript('https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js');
-        }
-
-        // Wait a small tick to ensure globals are set
-        await new Promise(r => setTimeout(r, 100));
-
-        if (window.pdfjsLib) {
-          window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-        }
-        
-        setIsLibrariesLoaded(true);
-      } catch (error) {
-        console.error("Failed to load libraries:", error);
-        alert("必要なライブラリの読み込みに失敗しました。ページをリロードしてください。");
-      }
-    };
-
-    loadLibraries();
-  }, []);
-
-  const handleFileChange = async (e) => {
-    const file = e.target.files[0];
-    if (file && file.type === 'application/pdf') {
-      processPDF(file);
-    } else {
-      alert('PDFファイルを選択してください。');
-    }
-  };
-
-  const processPDF = async (file) => {
-    if (!window.pdfjsLib) {
-      alert("PDF処理エンジンの準備ができていません。もう一度お試しください。");
-      return;
-    }
-
-    setIsProcessing(true);
-    setProgress(0);
-    setPdfFile(file);
-    setPages([]);
-
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      
-      // CRITICAL FIX: Clone the array buffer for storage.
-      // PDF.js uses web workers which might transfer (detach) the original buffer,
-      // making it unusable for pdf-lib later if we don't keep a copy.
-      setOriginalPdfBytes(arrayBuffer.slice(0));
-
-      // Load PDF for Rendering using PDF.js (uses the original buffer)
-      const loadingTask = window.pdfjsLib.getDocument(arrayBuffer);
-      const pdf = await loadingTask.promise;
-      const numPages = pdf.numPages;
-
-      const newPages = [];
-
-      for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 0.5 }); // Thumbnail scale
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-
-        await page.render({
-          canvasContext: context,
-          viewport: viewport
-        }).promise;
-
-        newPages.push({
-          id: `page-${i}-${Date.now()}`, // Unique ID
-          originalIndex: i - 1, // 0-based index for pdf-lib
-          displayNumber: i,
-          imageUrl: canvas.toDataURL()
-        });
-
-        setProgress(Math.round((i / numPages) * 100));
-      }
-
-      setPages(newPages);
-    } catch (error) {
-      console.error("Error processing PDF:", error);
-      alert("PDFの読み込みに失敗しました。パスワード付きPDFなどは対応していない場合があります。");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // --- Drag and Drop Logic ---
-  const handleDragStart = (e, index) => {
-    setDraggedItemIndex(index);
-    e.dataTransfer.effectAllowed = "move";
-    // Transparent drag image or default
-  };
-
-  const handleDragOver = (e, index) => {
-    e.preventDefault();
-    if (draggedItemIndex === null || draggedItemIndex === index) return;
-
-    const newPages = [...pages];
-    const draggedItem = newPages[draggedItemIndex];
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF整理ツール</title>
     
-    // Remove dragged item
-    newPages.splice(draggedItemIndex, 1);
-    // Insert at new position
-    newPages.splice(index, 0, draggedItem);
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- PDF Libraries -->
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
 
-    setPages(newPages);
-    setDraggedItemIndex(index);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedItemIndex(null);
-  };
-
-  // --- Actions ---
-  const removePage = (index) => {
-    const newPages = pages.filter((_, i) => i !== index);
-    setPages(newPages);
-  };
-
-  const movePage = (index, direction) => {
-    if (direction === 'left' && index > 0) {
-      const newPages = [...pages];
-      [newPages[index], newPages[index - 1]] = [newPages[index - 1], newPages[index]];
-      setPages(newPages);
-    } else if (direction === 'right' && index < pages.length - 1) {
-      const newPages = [...pages];
-      [newPages[index], newPages[index + 1]] = [newPages[index + 1], newPages[index]];
-      setPages(newPages);
-    }
-  };
-
-  const resetAll = () => {
-    if (confirm("すべての変更を破棄して初期状態に戻しますか？")) {
-      setPdfFile(null);
-      setPages([]);
-      setOriginalPdfBytes(null);
-    }
-  };
-
-  const saveNewPDF = async () => {
-    if (!originalPdfBytes || pages.length === 0) return;
-
-    try {
-      setIsProcessing(true);
-      if (!window.PDFLib) {
-         throw new Error("PDFLib is not loaded");
-      }
-      const { PDFDocument } = window.PDFLib;
-      
-      // Load the original PDF from the cloned buffer
-      const pdfDoc = await PDFDocument.load(originalPdfBytes);
-      
-      // Create a new PDF
-      const newPdfDoc = await PDFDocument.create();
-
-      // Get indices of pages we want to keep, in the order they appear in the UI
-      const indicesToCopy = pages.map(p => p.originalIndex);
-
-      // Copy pages from original to new
-      const copiedPages = await newPdfDoc.copyPages(pdfDoc, indicesToCopy);
-
-      // Add pages to the new document
-      copiedPages.forEach(page => newPdfDoc.addPage(page));
-
-      // Serialize the PDFDocument to bytes (a Uint8Array)
-      const pdfBytes = await newPdfDoc.save();
-
-      // Trigger download
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `edited_${pdfFile.name}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-    } catch (error) {
-      console.error("Error saving PDF:", error);
-      alert("PDFの保存中にエラーが発生しました。コンソールログを確認してください。");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // --- Render ---
-
-  if (!isLibrariesLoaded) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-200 border-t-indigo-600 mb-4"></div>
-        <p className="text-slate-600 font-medium">システム準備中...</p>
-      </div>
-    );
-  }
-
-  if (!pdfFile && !isProcessing) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
-        <div className="max-w-xl w-full bg-white rounded-xl shadow-xl p-8 text-center border-2 border-dashed border-indigo-200 hover:border-indigo-400 transition-colors cursor-pointer"
-             onClick={() => fileInputRef.current.click()}
-             onDragOver={(e) => e.preventDefault()}
-             onDrop={(e) => {
-               e.preventDefault();
-               if(e.dataTransfer.files[0]) processPDF(e.dataTransfer.files[0]);
-             }}
-        >
-          <div className="bg-indigo-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
-            <FileUp className="w-10 h-10 text-indigo-600" />
-          </div>
-          <h1 className="text-2xl font-bold text-slate-800 mb-2">PDF整理ツール</h1>
-          <p className="text-slate-500 mb-6">PDFをここにドラッグ＆ドロップするか、クリックして選択してください。</p>
-          <button className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors flex items-center justify-center mx-auto gap-2">
-            <Upload className="w-5 h-5" />
-            ファイルを選択
-          </button>
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            accept=".pdf" 
-            className="hidden" 
-          />
-          <p className="mt-8 text-xs text-slate-400">
-            ※ファイルはサーバーにアップロードされず、お使いのブラウザ内でのみ処理されます。
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-100 flex flex-col">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-indigo-600 p-1.5 rounded text-white">
-              <RefreshCw className="w-5 h-5" />
-            </div>
-            <h1 className="font-bold text-lg text-slate-800 hidden sm:block">PDF整理ツール</h1>
-            <span className="text-slate-400 text-sm hidden sm:block">|</span>
-            <span className="text-slate-600 text-sm truncate max-w-[150px] sm:max-w-md" title={pdfFile?.name}>
-              {pdfFile?.name}
-            </span>
-          </div>
-          
-          <div className="flex gap-2">
-            <button 
-              onClick={resetAll}
-              className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium transition-colors"
-            >
-              やり直す
-            </button>
-            <button 
-              onClick={saveNewPDF}
-              disabled={pages.length === 0 || isProcessing}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
-                pages.length === 0 || isProcessing 
-                  ? 'bg-indigo-300 cursor-not-allowed' 
-                  : 'bg-indigo-600 hover:bg-indigo-700 shadow-md hover:shadow-lg'
-              }`}
-            >
-              <Download className="w-4 h-4" />
-              {isProcessing ? '処理中...' : 'PDFを保存'}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="flex-1 max-w-7xl mx-auto px-4 py-8 w-full">
+    <style>
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+        .drag-over { border-color: #6366f1 !important; background-color: #eef2ff; }
+        .dragging { opacity: 0.5; transform: scale(0.95); }
         
-        {isProcessing && pages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64">
-            <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-            <p className="text-slate-600 font-medium">PDFを読み込んでいます...</p>
-            <p className="text-slate-400 text-sm mt-1">{progress}% 完了</p>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between mb-6">
-              <p className="text-slate-600">
-                <span className="font-bold text-slate-900">{pages.length}</span> ページ
-                <span className="text-sm ml-2 text-slate-400">（ドラッグして並べ替え、×ボタンで削除）</span>
-              </p>
-            </div>
+        /* Spinner Animation */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin { animation: spin 1s linear infinite; }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800">
 
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-20">
-              {pages.map((page, index) => (
-                <div
-                  key={page.id}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, index)}
-                  onDragOver={(e) => handleDragOver(e, index)}
-                  onDragEnd={handleDragEnd}
-                  className={`relative group bg-white rounded-lg shadow-sm border-2 transition-all duration-200 ${
-                    draggedItemIndex === index 
-                      ? 'border-indigo-500 opacity-50 scale-95' 
-                      : 'border-transparent hover:border-indigo-300 hover:shadow-md'
-                  }`}
-                >
-                  {/* Page Preview */}
-                  <div className="aspect-[1/1.4] w-full bg-slate-100 rounded-t-lg overflow-hidden relative cursor-grab active:cursor-grabbing">
-                    <img 
-                      src={page.imageUrl} 
-                      alt={`Page ${page.displayNumber}`}
-                      className="w-full h-full object-contain pointer-events-none select-none"
-                    />
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
-                    
-                    {/* Delete Button */}
-                    <button
-                      onClick={() => removePage(index)}
-                      className="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full shadow-sm hover:bg-red-600 hover:scale-110 transition-all opacity-0 group-hover:opacity-100"
-                      title="このページを削除"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* Page Footer */}
-                  <div className="p-3 flex items-center justify-between bg-white rounded-b-lg border-t border-slate-100">
-                    <div className="flex items-center gap-2">
-                       <span className="w-6 h-6 flex items-center justify-center bg-slate-100 text-slate-500 text-xs font-bold rounded">
-                         {index + 1}
-                       </span>
-                       <span className="text-xs text-slate-400">
-                         (元: {page.displayNumber}P)
-                       </span>
-                    </div>
-
-                    {/* Mobile/Accessible Reorder Controls (visible on hover or always on touch) */}
-                    <div className="flex gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button 
-                            onClick={() => movePage(index, 'left')}
-                            disabled={index === 0}
-                            className="p-1 text-slate-400 hover:text-indigo-600 disabled:opacity-30"
-                            title="左へ移動"
-                        >
-                            <ArrowLeft className="w-4 h-4" />
-                        </button>
-                        <button 
-                            onClick={() => movePage(index, 'right')}
-                            disabled={index === pages.length - 1}
-                            className="p-1 text-slate-400 hover:text-indigo-600 disabled:opacity-30"
-                            title="右へ移動"
-                        >
-                            <ArrowRight className="w-4 h-4" />
-                        </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            
-            {pages.length === 0 && (
-                <div className="text-center py-20 border-2 border-dashed border-slate-200 rounded-xl">
-                    <Trash2 className="w-12 h-12 text-slate-300 mx-auto mb-3"/>
-                    <p className="text-slate-500">すべてのページが削除されました</p>
-                    <button onClick={resetAll} className="text-indigo-600 hover:underline text-sm mt-2">最初からやり直す</button>
-                </div>
-            )}
-          </>
-        )}
-      </main>
+    <div id="app" class="min-h-screen flex flex-col">
+        <!-- Content will be injected here by JavaScript -->
     </div>
-  );
-};
 
-export default PDFOrganizer;
+    <script>
+        // --- State Management ---
+        const state = {
+            pdfFile: null,
+            pages: [], // { id, originalIndex, displayNumber, imageUrl }
+            isProcessing: false,
+            progress: 0,
+            originalPdfBytes: null,
+            draggedItemIndex: null
+        };
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set worker source for PDF.js
+            if (window.pdfjsLib) {
+                window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            }
+            render();
+        });
+
+        // --- Core Logic ---
+
+        async function handleFileSelect(event) {
+            const file = event.target.files ? event.target.files[0] : event.dataTransfer.files[0];
+            if (file && file.type === 'application/pdf') {
+                await processPDF(file);
+            } else {
+                alert('PDFファイルを選択してください。');
+            }
+        }
+
+        async function processPDF(file) {
+            if (!window.pdfjsLib) {
+                alert("ライブラリの読み込みが完了していません。リロードしてください。");
+                return;
+            }
+
+            state.isProcessing = true;
+            state.progress = 0;
+            state.pdfFile = file;
+            state.pages = [];
+            render();
+
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                
+                // CRITICAL FIX: Clone buffer for pdf-lib usage later
+                state.originalPdfBytes = arrayBuffer.slice(0);
+
+                const loadingTask = window.pdfjsLib.getDocument(arrayBuffer);
+                const pdf = await loadingTask.promise;
+                const numPages = pdf.numPages;
+
+                const newPages = [];
+
+                for (let i = 1; i <= numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const viewport = page.getViewport({ scale: 0.5 });
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+
+                    await page.render({
+                        canvasContext: context,
+                        viewport: viewport
+                    }).promise;
+
+                    newPages.push({
+                        id: `page-${i}-${Date.now()}`,
+                        originalIndex: i - 1,
+                        displayNumber: i,
+                        imageUrl: canvas.toDataURL()
+                    });
+
+                    state.progress = Math.round((i / numPages) * 100);
+                    render(); // Update progress UI
+                }
+
+                state.pages = newPages;
+            } catch (error) {
+                console.error("Error processing PDF:", error);
+                alert("PDFの読み込みに失敗しました。パスワード付きPDFなどは対応していない場合があります。");
+                state.pdfFile = null;
+            } finally {
+                state.isProcessing = false;
+                render();
+            }
+        }
+
+        async function saveNewPDF() {
+            if (!state.originalPdfBytes || state.pages.length === 0) return;
+
+            state.isProcessing = true;
+            render();
+
+            try {
+                const { PDFDocument } = window.PDFLib;
+                
+                // Load original from cloned buffer
+                const pdfDoc = await PDFDocument.load(state.originalPdfBytes);
+                const newPdfDoc = await PDFDocument.create();
+
+                const indicesToCopy = state.pages.map(p => p.originalIndex);
+                const copiedPages = await newPdfDoc.copyPages(pdfDoc, indicesToCopy);
+
+                copiedPages.forEach(page => newPdfDoc.addPage(page));
+
+                const pdfBytes = await newPdfDoc.save();
+                
+                const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `edited_${state.pdfFile.name}`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+            } catch (error) {
+                console.error("Error saving PDF:", error);
+                alert("保存中にエラーが発生しました。");
+            } finally {
+                state.isProcessing = false;
+                render();
+            }
+        }
+
+        function resetAll() {
+            if (confirm("すべての変更を破棄して初期状態に戻しますか？")) {
+                state.pdfFile = null;
+                state.pages = [];
+                state.originalPdfBytes = null;
+                render();
+            }
+        }
+
+        function removePage(index) {
+            state.pages.splice(index, 1);
+            render();
+        }
+
+        function movePage(index, direction) {
+            if (direction === 'left' && index > 0) {
+                [state.pages[index], state.pages[index - 1]] = [state.pages[index - 1], state.pages[index]];
+            } else if (direction === 'right' && index < state.pages.length - 1) {
+                [state.pages[index], state.pages[index + 1]] = [state.pages[index + 1], state.pages[index]];
+            }
+            render();
+        }
+
+        // --- Drag and Drop Logic ---
+        
+        function handleDragStart(e, index) {
+            state.draggedItemIndex = index;
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData('text/plain', index); // Required for Firefox
+            e.target.closest('.draggable-item').classList.add('dragging');
+        }
+
+        function handleDragOver(e, index) {
+            e.preventDefault();
+            if (state.draggedItemIndex === null || state.draggedItemIndex === index) return;
+
+            const draggedItem = state.pages[state.draggedItemIndex];
+            state.pages.splice(state.draggedItemIndex, 1);
+            state.pages.splice(index, 0, draggedItem);
+            
+            state.draggedItemIndex = index;
+            render();
+            
+            // Re-apply dragging class after render
+            const items = document.querySelectorAll('.draggable-item');
+            if(items[index]) items[index].classList.add('dragging');
+        }
+
+        function handleDragEnd(e) {
+            state.draggedItemIndex = null;
+            document.querySelectorAll('.draggable-item').forEach(el => el.classList.remove('dragging'));
+            render();
+        }
+
+        // --- Rendering ---
+
+        function render() {
+            const app = document.getElementById('app');
+            app.innerHTML = ''; // Clear current content
+
+            // 1. Loading / Processing State
+            if (state.isProcessing && state.pages.length === 0) {
+                app.innerHTML = renderProcessing();
+                lucide.createIcons();
+                return;
+            }
+
+            // 2. Initial Upload State
+            if (!state.pdfFile) {
+                app.innerHTML = renderUpload();
+                setupUploadEvents();
+            } else {
+                // 3. Main Editor State
+                app.innerHTML = renderEditor();
+                setupEditorEvents();
+            }
+            
+            lucide.createIcons();
+        }
+
+        function renderUpload() {
+            return `
+            <div class="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+                <div id="drop-zone" class="max-w-xl w-full bg-white rounded-xl shadow-xl p-8 text-center border-2 border-dashed border-indigo-200 hover:border-indigo-400 transition-colors cursor-pointer">
+                    <div class="bg-indigo-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <i data-lucide="file-up" class="w-10 h-10 text-indigo-600"></i>
+                    </div>
+                    <h1 class="text-2xl font-bold text-slate-800 mb-2">PDF整理ツール</h1>
+                    <p class="text-slate-500 mb-6">PDFをここにドラッグ＆ドロップするか、クリックして選択してください。</p>
+                    <button id="select-file-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors flex items-center justify-center mx-auto gap-2">
+                        <i data-lucide="upload" class="w-5 h-5"></i>
+                        ファイルを選択
+                    </button>
+                    <input type="file" id="file-input" accept=".pdf" class="hidden" />
+                    <p class="mt-8 text-xs text-slate-400">
+                        ※ファイルはサーバーにアップロードされず、お使いのブラウザ内でのみ処理されます。
+                    </p>
+                </div>
+            </div>`;
+        }
+
+        function renderProcessing() {
+            return `
+            <div class="min-h-screen flex flex-col items-center justify-center bg-slate-100">
+                <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
+                <p class="text-slate-600 font-medium">PDFを読み込んでいます...</p>
+                <p class="text-slate-400 text-sm mt-1">${state.progress}% 完了</p>
+            </div>`;
+        }
+
+        function renderEditor() {
+            const pagesHtml = state.pages.map((page, index) => `
+                <div 
+                    class="draggable-item relative group bg-white rounded-lg shadow-sm border-2 border-transparent hover:border-indigo-300 hover:shadow-md transition-all duration-200 cursor-move"
+                    draggable="true"
+                    data-index="${index}"
+                >
+                    <!-- Page Preview -->
+                    <div class="aspect-[1/1.4] w-full bg-slate-100 rounded-t-lg overflow-hidden relative">
+                        <img src="${page.imageUrl}" class="w-full h-full object-contain pointer-events-none select-none" />
+                        <div class="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors pointer-events-none"></div>
+                        
+                        <!-- Delete Button -->
+                        <button onclick="removePage(${index})" class="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full shadow-sm hover:bg-red-600 hover:scale-110 transition-all opacity-0 group-hover:opacity-100" title="削除">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+
+                    <!-- Footer -->
+                    <div class="p-3 flex items-center justify-between bg-white rounded-b-lg border-t border-slate-100">
+                        <div class="flex items-center gap-2">
+                            <span class="w-6 h-6 flex items-center justify-center bg-slate-100 text-slate-500 text-xs font-bold rounded">${index + 1}</span>
+                            <span class="text-xs text-slate-400">(元: ${page.displayNumber}P)</span>
+                        </div>
+                        <div class="flex gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onclick="movePage(${index}, 'left')" class="p-1 text-slate-400 hover:text-indigo-600 disabled:opacity-30" ${index === 0 ? 'disabled' : ''}>
+                                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                            </button>
+                            <button onclick="movePage(${index}, 'right')" class="p-1 text-slate-400 hover:text-indigo-600 disabled:opacity-30" ${index === state.pages.length - 1 ? 'disabled' : ''}>
+                                <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+
+            return `
+            <!-- Header -->
+            <header class="bg-white shadow-sm border-b sticky top-0 z-10">
+                <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <div class="bg-indigo-600 p-1.5 rounded text-white">
+                            <i data-lucide="refresh-cw" class="w-5 h-5"></i>
+                        </div>
+                        <h1 class="font-bold text-lg text-slate-800 hidden sm:block">PDF整理ツール</h1>
+                        <span class="text-slate-400 text-sm hidden sm:block">|</span>
+                        <span class="text-slate-600 text-sm truncate max-w-[150px] sm:max-w-md">${state.pdfFile.name}</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="resetAll()" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium transition-colors">やり直す</button>
+                        <button onclick="saveNewPDF()" 
+                            class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors ${state.isProcessing || state.pages.length === 0 ? 'bg-indigo-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-md'}"
+                            ${state.isProcessing || state.pages.length === 0 ? 'disabled' : ''}>
+                            <i data-lucide="download" class="w-4 h-4"></i>
+                            ${state.isProcessing ? '処理中...' : 'PDFを保存'}
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Main -->
+            <main class="flex-1 max-w-7xl mx-auto px-4 py-8 w-full">
+                ${state.isProcessing ? renderProcessing() : `
+                    <div class="flex items-center justify-between mb-6">
+                        <p class="text-slate-600">
+                            <span class="font-bold text-slate-900">${state.pages.length}</span> ページ
+                            <span class="text-sm ml-2 text-slate-400">（ドラッグして並べ替え、×ボタンで削除）</span>
+                        </p>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-20">
+                        ${pagesHtml}
+                    </div>
+
+                    ${state.pages.length === 0 ? `
+                        <div class="text-center py-20 border-2 border-dashed border-slate-200 rounded-xl">
+                            <i data-lucide="trash-2" class="w-12 h-12 text-slate-300 mx-auto mb-3"></i>
+                            <p class="text-slate-500">すべてのページが削除されました</p>
+                            <button onclick="resetAll()" class="text-indigo-600 hover:underline text-sm mt-2">最初からやり直す</button>
+                        </div>
+                    ` : ''}
+                `}
+            </main>
+            `;
+        }
+
+        // --- Event Listeners Setup ---
+
+        function setupUploadEvents() {
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput = document.getElementById('file-input');
+            const selectBtn = document.getElementById('select-file-btn');
+
+            selectBtn.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', handleFileSelect);
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('drag-over');
+            });
+            dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('drag-over');
+                handleFileSelect(e);
+            });
+        }
+
+        function setupEditorEvents() {
+            const items = document.querySelectorAll('.draggable-item');
+            items.forEach(item => {
+                const index = parseInt(item.dataset.index);
+                item.addEventListener('dragstart', (e) => handleDragStart(e, index));
+                item.addEventListener('dragover', (e) => handleDragOver(e, index));
+                item.addEventListener('dragend', handleDragEnd);
+            });
+        }
+
+        // Expose functions to global scope for inline onclick handlers
+        window.removePage = removePage;
+        window.movePage = movePage;
+        window.resetAll = resetAll;
+        window.saveNewPDF = saveNewPDF;
+
+    </script>
+</body>
+</html>
