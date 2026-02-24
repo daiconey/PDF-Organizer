@@ -75,25 +75,33 @@
             if (window.pdfjsLib) {
                 window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
             }
-            render();
+            
+            // グローバルなドラッグ＆ドロップイベントを初回のみ登録（重複発火防止）
             setupGlobalDragEvents();
+            
+            render();
         });
 
         // --- Core Logic ---
 
         // Handle file selection (Initial or Add)
         async function handleFileSelect(event) {
+            // 処理中の重複実行をブロックする（バグ修正の要）
+            if (state.isProcessing) return;
+
             const files = event.target.files ? Array.from(event.target.files) : Array.from(event.dataTransfer.files);
             const pdfFiles = files.filter(f => f.type === 'application/pdf');
 
             if (pdfFiles.length === 0) {
-                alert('PDFファイルを選択してください。');
                 return;
             }
 
             await processPDFs(pdfFiles);
+            
             // Reset input
-            event.target.value = '';
+            if (event.target && event.target.value !== undefined) {
+                event.target.value = '';
+            }
         }
 
         async function processPDFs(files) {
@@ -150,8 +158,6 @@
                             imageUrl: canvas.toDataURL()
                         });
 
-                        // Update progress per page within file context
-                        // (Simplified progress logic)
                         state.progress = Math.round((i / numPages) * 100);
                         if (files.length > 1) {
                             state.statusMessage = `${file.name} を処理中 (${fIndex + 1}/${files.length})...`;
@@ -245,7 +251,6 @@
             e.dataTransfer.effectAllowed = "move";
             e.dataTransfer.setData('text/plain', index); // Required for Firefox
             
-            // Add styling delay to keep the element visible while dragging starts
             setTimeout(() => {
                 const el = document.querySelector(`[data-index="${index}"]`);
                 if(el) el.classList.add('dragging-page');
@@ -254,7 +259,7 @@
 
         function handlePageDragOver(e, targetIndex) {
             e.preventDefault();
-            if (state.draggedPageIndex === null) return; // Not dragging a page
+            if (state.draggedPageIndex === null) return; 
             if (state.draggedPageIndex === targetIndex) {
                 state.dropTargetIndex = null;
                 state.dropPosition = null;
@@ -266,7 +271,6 @@
             const rect = targetEl.getBoundingClientRect();
             const mouseX = e.clientX;
             
-            // Determine if mouse is on left or right half
             const isRight = mouseX > rect.left + rect.width / 2;
             
             state.dropTargetIndex = targetIndex;
@@ -286,11 +290,8 @@
             if (toIndex !== null && position) {
                 const item = state.pages[fromIndex];
                 
-                // Remove from old position
                 state.pages.splice(fromIndex, 1);
                 
-                // Calculate new position index
-                // Note: If we removed an item before the target, the indices shift
                 let insertAtIndex = toIndex;
                 if (fromIndex < toIndex) {
                     insertAtIndex = position === 'left' ? toIndex - 1 : toIndex;
@@ -314,12 +315,10 @@
             state.draggedPageIndex = null;
             state.dropTargetIndex = null;
             state.dropPosition = null;
-            renderInsertionUI(); // Clear UI
+            renderInsertionUI(); 
         }
 
-        // UI only update for insertion bar (Performance optimization)
         function renderInsertionUI() {
-            // Clear all existing bars
             document.querySelectorAll('.insertion-bar').forEach(el => el.remove());
             
             if (state.dropTargetIndex !== null && state.dropPosition) {
@@ -335,35 +334,36 @@
         // --- Drag and Drop Logic (File Upload) ---
 
         function setupGlobalDragEvents() {
-            const app = document.getElementById('app');
-            
-            // Prevent default browser behavior
             ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
                 window.addEventListener(eventName, preventDefaults, false);
             });
 
-            // Handle file drag enter/leave visual feedback
             window.addEventListener('dragenter', (e) => {
-                if (e.dataTransfer.types.includes('Files')) {
+                // ファイルのドラッグであり、ページ並べ替えのドラッグではない場合のみ発火
+                if (e.dataTransfer.types.includes('Files') && state.draggedPageIndex === null) {
                     state.isFileDragging = true;
                     updateFileDragUI();
                 }
             });
 
-            // We need to be careful with dragleave firing when entering children
-            // Simplified: Use a counter or just cover overlay
-            const overlay = document.getElementById('file-drag-overlay');
-            if (overlay) {
-                 overlay.addEventListener('dragleave', (e) => {
+            window.addEventListener('dragleave', (e) => {
+                // 画面外にカーソルが出た場合のみオーバーレイを消す
+                if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
                     state.isFileDragging = false;
                     updateFileDragUI();
-                });
-                overlay.addEventListener('drop', (e) => {
+                }
+            });
+
+            window.addEventListener('drop', (e) => {
+                if (state.isFileDragging) {
                     state.isFileDragging = false;
                     updateFileDragUI();
-                    handleFileSelect(e);
-                });
-            }
+                    
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        handleFileSelect(e);
+                    }
+                }
+            });
         }
 
         function preventDefaults(e) {
@@ -387,28 +387,24 @@
         function render() {
             const app = document.getElementById('app');
             
-            // 1. Loading State
             if (state.isProcessing) {
                 app.innerHTML = renderProcessing();
                 lucide.createIcons();
                 return;
             }
 
-            // 2. Initial Upload State (No pages)
             if (state.pages.length === 0) {
                 app.innerHTML = renderInitialUpload();
                 setupInitialUploadEvents();
             } else {
-                // 3. Editor State (Has pages)
                 app.innerHTML = renderEditor();
                 setupEditorEvents();
             }
             
             lucide.createIcons();
 
-            // Re-attach file input listener since innerHTML replaced it
             const addInput = document.getElementById('add-file-input');
-            addInput.onchange = handleFileSelect;
+            if(addInput) addInput.onchange = handleFileSelect;
         }
 
         function renderProcessing() {
@@ -426,7 +422,7 @@
         function renderInitialUpload() {
             return `
             <div class="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
-                <div id="drop-zone" class="max-w-xl w-full bg-white rounded-xl shadow-xl p-10 text-center border-2 border-dashed border-indigo-200 hover:border-indigo-400 transition-colors cursor-pointer group relative">
+                <div class="max-w-xl w-full bg-white rounded-xl shadow-xl p-10 text-center border-2 border-dashed border-indigo-200 hover:border-indigo-400 transition-colors cursor-pointer group relative">
                     <div class="bg-indigo-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-105 transition-transform">
                         <i data-lucide="file-up" class="w-10 h-10 text-indigo-600"></i>
                     </div>
@@ -457,27 +453,19 @@
         }
 
         function renderEditor() {
-            // Generate HTML for page grid
             const pagesHtml = state.pages.map((page, index) => `
                 <div 
                     class="draggable-item relative group bg-white rounded-xl shadow-sm border-2 border-transparent hover:border-indigo-300 hover:shadow-md transition-all duration-200"
                     draggable="true"
                     data-index="${index}"
                 >
-                    <!-- Page Preview Container -->
                     <div class="preview-container aspect-[1/1.4] w-full bg-slate-100 rounded-t-lg overflow-visible relative">
                         <img src="${page.imageUrl}" class="w-full h-full object-contain pointer-events-none select-none rounded-t-lg" />
-                        
-                        <!-- Hover Overlay -->
                         <div class="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors pointer-events-none rounded-t-lg"></div>
-                        
-                        <!-- Delete Button -->
                         <button onclick="removePage(${index})" class="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full shadow-sm hover:bg-red-600 hover:scale-110 transition-all opacity-0 group-hover:opacity-100 z-10" title="削除">
                             <i data-lucide="x" class="w-4 h-4"></i>
                         </button>
                     </div>
-
-                    <!-- Footer Info -->
                     <div class="p-3 flex items-center justify-between bg-white rounded-b-xl border-t border-slate-100">
                         <div class="flex items-center gap-2">
                             <span class="w-6 h-6 flex items-center justify-center bg-slate-100 text-slate-500 text-xs font-bold rounded">${index + 1}</span>
@@ -491,7 +479,6 @@
             `).join('');
 
             return `
-            <!-- Header -->
             <header class="bg-white shadow-sm border-b sticky top-0 z-40">
                 <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
                     <div class="flex items-center gap-3">
@@ -499,14 +486,11 @@
                             <i data-lucide="layers" class="w-5 h-5"></i>
                         </div>
                         <h1 class="font-bold text-lg text-slate-800 hidden sm:block">PDF整理ツール</h1>
-                        
-                        <!-- Add File Button -->
                         <button onclick="triggerAddFile()" class="ml-4 flex items-center gap-2 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-sm font-medium transition-colors border border-slate-200">
                             <i data-lucide="plus" class="w-4 h-4"></i>
                             PDFを追加
                         </button>
                     </div>
-                    
                     <div class="flex gap-2">
                         <button onclick="resetAll()" class="px-4 py-2 text-slate-600 hover:bg-red-50 hover:text-red-600 rounded-lg text-sm font-medium transition-colors">
                             クリア
@@ -520,9 +504,7 @@
                 </div>
             </header>
 
-            <!-- Main Editor Area -->
             <main class="flex-1 max-w-7xl mx-auto px-4 py-8 w-full relative min-h-[calc(100vh-4rem)]">
-                
                 <div class="flex items-center justify-between mb-6 bg-blue-50 p-4 rounded-lg border border-blue-100">
                     <p class="text-blue-800 font-medium flex items-center gap-2">
                         <span class="bg-white px-2 py-0.5 rounded shadow-sm text-blue-600 font-bold text-lg">${state.pages.length}</span> ページ
@@ -532,21 +514,17 @@
                     </p>
                 </div>
                 
-                <!-- Grid -->
                 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-20 select-none">
                     ${pagesHtml}
                 </div>
 
-                <!-- Empty State within Editor (should rare) -->
                 ${state.pages.length === 0 ? `
                     <div class="text-center py-20">
                         <p class="text-slate-400">ページがありません</p>
                     </div>
                 ` : ''}
-
             </main>
 
-            <!-- File Drag Overlay -->
             <div id="file-drag-overlay" class="fixed inset-0 bg-indigo-600/90 z-50 flex items-center justify-center hidden backdrop-blur-sm">
                 <div class="text-white text-center pointer-events-none">
                     <div class="bg-white/20 p-6 rounded-full w-32 h-32 flex items-center justify-center mx-auto mb-6 animate-pulse">
@@ -559,36 +537,17 @@
             `;
         }
 
-        // --- Event Listeners Setup ---
-
         function setupInitialUploadEvents() {
-            const dropZone = document.getElementById('drop-zone');
             const fileInput = document.getElementById('initial-file-input');
             const selectBtn = document.getElementById('select-file-btn');
             
-            // File Input Trigger
             if(selectBtn) selectBtn.addEventListener('click', () => fileInput.click());
             if(fileInput) fileInput.addEventListener('change', handleFileSelect);
-
-            // Drag Zone Visuals
-            if(dropZone) {
-                dropZone.addEventListener('dragover', (e) => {
-                    e.preventDefault();
-                    dropZone.classList.add('drag-over-zone');
-                });
-                dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over-zone'));
-                dropZone.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    dropZone.classList.remove('drag-over-zone');
-                    handleFileSelect(e);
-                });
-            }
             
-            setupGlobalDragEvents(); // Ensure global overlay works too
+            // ドロップ処理は setupGlobalDragEvents に一元化しました
         }
 
         function setupEditorEvents() {
-            // Page Reordering D&D
             const items = document.querySelectorAll('.draggable-item');
             items.forEach(item => {
                 const index = parseInt(item.dataset.index);
@@ -597,12 +556,8 @@
                 item.addEventListener('drop', handlePageDrop);
                 item.addEventListener('dragend', handlePageDragEnd);
             });
-
-            // Re-setup global file drop logic for the editor view
-            setupGlobalDragEvents();
         }
 
-        // Global function exposure
         window.removePage = removePage;
         window.resetAll = resetAll;
         window.saveNewPDF = saveNewPDF;
